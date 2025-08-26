@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>SA Commission & Take-Home Calculator</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;background:#0b1220;color:#e6edf3;margin:0;padding:16px}
+  .container{max-width:680px;margin:0 auto;background:rgba(255,255,255,0.02);padding:16px;border-radius:12px;border:1px solid rgba(255,255,255,0.06)}
+  h1{font-size:18px;margin-bottom:12px}
+  label{display:block;margin-top:10px;font-size:14px;color:#9fb0c8}
+  input,select{width:100%;padding:10px;margin-top:4px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:#e6edf3}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .result{margin-top:16px;padding:12px;background:rgba(255,255,255,0.02);border-radius:8px}
+  .result div{margin-bottom:6px;font-size:16px}
+  .btn{margin-top:12px;padding:10px;border-radius:8px;border:none;cursor:pointer;background:#2dd4bf;color:#012;font-weight:600;width:100%}
+  .btn.secondary{background:#60a5fa}
+  .btn.danger{background:#ef4444}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  th,td{padding:6px;border-bottom:1px solid rgba(255,255,255,0.06);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  footer{margin-top:16px;font-size:12px;color:#9fb0c8}
+  small.hint{display:block;color:#9fb0c8;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>SA Commission & Take-Home Calculator</h1>
+
+  <div class="row">
+    <div>
+      <label>Mode</label>
+      <select id="mode">
+        <option value="monthly" selected>Monthly</option>
+        <option value="annual">Annual</option>
+      </select>
+    </div>
+    <div>
+      <label>Age</label>
+      <select id="age">
+        <option value="under65" selected>Under 65</option>
+        <option value="65to74">65 - 74</option>
+        <option value="75plus">75+</option>
+      </select>
+    </div>
+  </div>
+
+  <label>Basic Salary (Gross)</label>
+  <input type="number" id="basic" value="25000" step="0.01"/>
+
+  <label>Commission (Gross)</label>
+  <input type="number" id="commission" value="0" step="0.01"/>
+
+  <div class="row">
+    <div>
+      <label>Pension/RA (per period, optional)</label>
+      <input type="number" id="pension" value="0" step="0.01"/>
+    </div>
+    <div>
+      <label>Medical (per period, optional)</label>
+      <input type="number" id="medical" value="0" step="0.01"/>
+    </div>
+  </div>
+
+  <label>Actual Take-Home from Payslip (optional, for Save)</label>
+  <input type="number" id="actualTake" value="0" step="0.01"/>
+  <small class="hint">If you enter your real take-home and click Save, the tool derives the exact rate for that month and learns from it.</small>
+
+  <div class="result">
+    <div>Estimated Commission Tax Rate: <strong id="rate">—</strong></div>
+    <div>Estimated Tax on Commission: <span id="taxComm">—</span></div>
+    <div>PAYE on Basic: <span id="payeOut">—</span></div>
+    <div>Estimated Take-Home: <strong id="takehome">—</strong></div>
+  </div>
+
+  <div style="margin-top:12px">
+    <h3>History (permanent + saved)</h3>
+    <table id="histTable">
+      <thead>
+        <tr><th>Date</th><th>Mode</th><th>Commission</th><th>Rate</th><th>Take-Home</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <button class="btn" id="save">Save (Add to History)</button>
+  <button class="btn secondary" id="export">Export CSV</button>
+  <button class="btn danger" id="clear">Clear Saved History</button>
+
+  <footer>
+    Uses SARS 2025/26 brackets & rebates. UIF employee portion capped at R177.12/month.
+    Permanent history is baked in from your payslips for accuracy; saved rows add on top.
+  </footer>
+</div>
+
+<script>
+(function(){
+  // --- SARS 2025/26 tax setup (annual) ---
+  const TAX = [
+    { upTo: 237100, base: 0,      rate: 0.18 },
+    { upTo: 370500, base: 42678,  rate: 0.26 },
+    { upTo: 512800, base: 77362,  rate: 0.31 },
+    { upTo: 673000, base: 121475, rate: 0.36 },
+    { upTo: 857900, base: 179147, rate: 0.39 },
+    { upTo: 1817000,base: 251258, rate: 0.41 },
+    { upTo: Infinity,base: 644489, rate: 0.45 }
+  ];
+  const REBATES = { primary: 17235, secondary: 9444, tertiary: 3145 };
+  const UIF_CAP = 177.12;
+
+  // --- Permanent payslip history (monthly figures) ---
+  // (commission, takeHome) — always included; cannot be deleted
+  const FIXED = [
+    { commission: 15567.20, takeHome: 28823.51 },
+    { commission:  5129.00, takeHome: 20361.63 },
+    { commission:  1430.00, takeHome: 17335.73 }
+  ];
+
+  // --- DOM ---
+  const els = {
+    mode: document.getElementById('mode'),
+    age: document.getElementById('age'),
+    basic: document.getElementById('basic'),
+    commission: document.getElementById('commission'),
+    pension: document.getElementById('pension'),
+    medical: document.getElementById('medical'),
+    actualTake: document.getElementById('actualTake'),
+    rate: document.getElementById('rate'),
+    taxComm: document.getElementById('taxComm'),
+    payeOut: document.getElementById('payeOut'),
+    takehome: document.getElementById('takehome'),
+    save: document.getElementById('save'),
+    export: document.getElementById('export'),
+    clear: document.getElementById('clear'),
+    histBody: document.querySelector('#histTable tbody')
+  };
+
+  // --- Utils ---
+  const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+  const fmtZAR = n => 'R' + Number(n||0).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const near = (a, b, eps=0.01) => Math.abs(a - b) <= eps;
+
+  function annualTaxBeforeRebate(annualTaxable) {
+    for (let i = 0; i < TAX.length; i++) {
+      const b = TAX[i];
+      if (annualTaxable <= b.upTo) {
+        if (i === 0) return annualTaxable * b.rate;
+        const prev = TAX[i-1].upTo;
+        return b.base + (annualTaxable - prev) * b.rate;
+      }
+    }
+    return 0;
+  }
+
+  function rebateForAge(age) {
+    let r = REBATES.primary;
+    if (age === '65to74') r += REBATES.secondary;
+    if (age === '75plus') r += REBATES.secondary + REBATES.tertiary;
+    return r;
+  }
+
+  function payeForPeriod(basicGross, age, pension, medical, mode) {
+    const multiplier = (mode === 'monthly') ? 12 : 1; // convert period -> annual
+    const annualBasic = basicGross * multiplier;
+    const annualPension = (pension||0) * multiplier;
+    const annualMedical = (medical||0) * multiplier;
+    const taxable = Math.max(0, annualBasic - annualPension - annualMedical);
+    const annualTax = Math.max(0, annualTaxBeforeRebate(taxable) - rebateForAge(age));
+    return annualTax / multiplier; // back to period
+  }
+
+  function uifForPeriod(basicGross, commissionGross, mode) {
+    const multiplier = (mode === 'monthly') ? 1 : 12; // annual mode = 12 months of UIF
+    const perPeriod = Math.min((basicGross + commissionGross) * 0.01, UIF_CAP);
+    return perPeriod * multiplier;
+  }
+
+  // Derive the exact commission rate from a payslip pair so the model reproduces it:
+  // From: TH = basic + comm - PAYE(basic) - (comm * rate) - UIF(basic+comm) - pension - medical
+  // => rate = [basic + comm - PAYE - UIF - pension - medical - TH] / comm
+  function rateFromPayslip(comm, takeHome, inputs) {
+    if (comm <= 0) return 0;
+    const paye = payeForPeriod(inputs.basic, inputs.age, inputs.pension, inputs.medical, inputs.mode);
+    const uif  = uifForPeriod(inputs.basic, comm, inputs.mode);
+    const num  = inputs.basic + comm - paye - uif - inputs.pension - inputs.medical - takeHome;
+    return clamp(num / comm, 0, 0.55);
+  }
+
+  function loadHist(){
+    try { return JSON.parse(localStorage.getItem('sacalc_hist') || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveHist(rows){
+    localStorage.setItem('sacalc_hist', JSON.stringify(rows));
+  }
+
+  // Build calibration points: rates derived from permanent payslips + saved rows (which store a rate)
+  function buildPoints(inputs) {
+    const points = [];
+
+    // Permanent points (derive rate using current inputs)
+    for (const p of FIXED) {
+      points.push({
+        comm: p.commission,
+        rate: rateFromPayslip(p.commission, p.takeHome, inputs),
+        source: 'fixed',
+        takeHome: p.takeHome
+      });
+    }
+
+    // Saved rows (already contain a rate and takeHome)
+    for (const r of loadHist()) {
+      // If user saved with an Actual Take-Home, recompute to align with current inputs
+      // to prevent drift when basic/age changes:
+      let rt = r.rate;
+      if (r.takeHome && r.commission > 0) {
+        rt = rateFromPayslip(r.commission, r.takeHome, inputs);
+      }
+      points.push({ comm: r.commission, rate: clamp(rt, 0, 0.55), source: 'saved', takeHome: r.takeHome });
+    }
+
+    // Sort by commission ascending
+    points.sort((a,b) => a.comm - b.comm);
+    return points;
+  }
+
+  // Interpolate between points; exact match returns the exact point’s rate
+  function effectiveRate(commission, inputs) {
+    const pts = buildPoints(inputs);
+    if (pts.length === 0) return 0.25;
+
+    // Exact/near match
+    for (const p of pts) {
+      if (near(commission, p.comm)) return p.rate;
+    }
+
+    // Below min or above max -> clamp to endpoint
+    if (commission < pts[0].comm) return pts[0].rate;
+    if (commission > pts[pts.length - 1].comm) return pts[pts.length - 1].rate;
+
+    // Linear interpolation between neighbors
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i+1];
+      if (commission >= a.comm && commission <= b.comm) {
+        const t = (commission - a.comm) / (b.comm - a.comm || 1);
+        return clamp(a.rate + t * (b.rate - a.rate), 0, 0.55);
+      }
+    }
+    return clamp(pts[pts.length - 1].rate, 0, 0.55);
+  }
+
+  // Calculation for the current inputs
+  function calc() {
+    const inputs = {
+      mode: els.mode.value,
+      age: els.age.value,
+      basic: parseFloat(els.basic.value) || 0,
+      commission: parseFloat(els.commission.value) || 0,
+      pension: parseFloat(els.pension.value) || 0,
+      medical: parseFloat(els.medical.value) || 0
+    };
+
+    // PAYE on basic (per period)
+    const paye = payeForPeriod(inputs.basic, inputs.age, inputs.pension, inputs.medical, inputs.mode);
+
+    // Commission rate from calibration
+    const rate = effectiveRate(inputs.commission, inputs);
+
+    // UIF (per period) on total (basic + commission)
+    const uif = uifForPeriod(inputs.basic, inputs.commission, inputs.mode);
+
+    // Final take-home estimate
+    const taxOnCommission = inputs.commission * rate;
+    const takeHome = inputs.basic + inputs.commission - paye - taxOnCommission - uif - inputs.pension - inputs.medical;
+
+    // Output
+    els.rate.textContent   = (rate * 100).toFixed(1) + '%';
+    els.taxComm.textContent= fmtZAR(taxOnCommission);
+    els.payeOut.textContent= fmtZAR(paye);
+    els.takehome.textContent= fmtZAR(takeHome);
+
+    return { inputs, rate, paye, uif, takeHome, taxOnCommission };
+  }
+
+  function renderHistory(){
+    const inputs = {
+      mode: els.mode.value,
+      age: els.age.value,
+      basic: parseFloat(els.basic.value) || 0,
+      commission: 0,
+      pension: parseFloat(els.pension.value) || 0,
+      medical: parseFloat(els.medical.value) || 0
+    };
+
+    const rows = [];
+    // fixed first
+    for (const f of FIXED) {
+      const r = rateFromPayslip(f.commission, f.takeHome, { ...inputs, commission: f.commission });
+      rows.push({ date: 'Fixed', mode: 'monthly', commission: f.commission, rate: r, takeHome: f.takeHome });
+    }
+    // saved next
+    for (const s of loadHist()) {
+      // align stored row to current inputs for display
+      const r = s.takeHome && s.commission > 0
+        ? rateFromPayslip(s.commission, s.takeHome, { ...inputs, commission: s.commission })
+        : s.rate;
+      rows.push({ date: s.date || 'Saved', mode: s.mode || 'monthly', commission: s.commission, rate: clamp(r,0,0.55), takeHome: s.takeHome });
+    }
+
+    els.histBody.innerHTML = '';
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${row.date}</td>
+        <td>${row.mode}</td>
+        <td>${fmtZAR(row.commission)}</td>
+        <td>${(row.rate*100).toFixed(1)}%</td>
+        <td>${fmtZAR(row.takeHome)}</td>
+      `;
+      els.histBody.appendChild(tr);
+    }
+  }
+
+  // --- Events ---
+  ['mode','age','basic','commission','pension','medical'].forEach(id=>{
+    document.getElementById(id).addEventListener('input', ()=>{
+      calc();
+      renderHistory(); // history-derived rates depend on current inputs
+    });
+    document.getElementById(id).addEventListener('change', ()=>{
+      calc();
+      renderHistory();
+    });
+  });
+
+  els.save.addEventListener('click', ()=>{
+    const inputs = {
+      mode: els.mode.value,
+      age: els.age.value,
+      basic: parseFloat(els.basic.value) || 0,
+      commission: parseFloat(els.commission.value) || 0,
+      pension: parseFloat(els.pension.value) || 0,
+      medical: parseFloat(els.medical.value) || 0
+    };
+    if (inputs.commission <= 0) { alert('Enter a commission first.'); return; }
+
+    const actual = parseFloat(els.actualTake.value) || 0;
+    let rate, takeHome;
+
+    if (actual > 0) {
+      // learn from real payslip
+      rate = rateFromPayslip(inputs.commission, actual, inputs);
+      takeHome = actual;
+    } else {
+      const res = calc();
+      rate = res.rate;
+      takeHome = res.takeHome;
+    }
+
+    const rows = loadHist();
+    rows.unshift({
+      date: new Date().toLocaleDateString('en-ZA'),
+      mode: inputs.mode,
+      commission: inputs.commission,
+      rate: clamp(rate,0,0.55),
+      takeHome: takeHome
+    });
+    saveHist(rows);
+    renderHistory();
+    alert('Saved.');
+  });
+
+  els.export.addEventListener('click', ()=>{
+    // export permanent + saved, showing derived rates for permanent points
+    const inputsBase = {
+      mode: els.mode.value,
+      age: els.age.value,
+      basic: parseFloat(els.basic.value) || 0,
+      pension: parseFloat(els.pension.value) || 0,
+      medical: parseFloat(els.medical.value) || 0
+    };
+
+    const lines = ['Date,Mode,Commission,Rate(%),TakeHome'];
+    // fixed first
+    for (const f of FIXED) {
+      const r = rateFromPayslip(f.commission, f.takeHome, { ...inputsBase, commission: f.commission });
+      lines.push(['Fixed','monthly',f.commission,(r*100).toFixed(2),f.takeHome].join(','));
+    }
+    // saved next
+    for (const s of loadHist()) {
+      const r = s.takeHome && s.commission > 0
+        ? rateFromPayslip(s.commission, s.takeHome, { ...inputsBase, commission: s.commission })
+        : s.rate;
+      lines.push([s.date||'Saved', s.mode||'monthly', s.commission, (clamp(r,0,0.55)*100).toFixed(2), s.takeHome||''].join(','));
+    }
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'commission_history.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  els.clear.addEventListener('click', ()=>{
+    if (confirm('Clear saved history? Permanent payslip data stays.')) {
+      localStorage.removeItem('sacalc_hist');
+      renderHistory();
+      alert('Saved history cleared.');
+    }
+  });
+
+  // --- Init ---
+  calc();
+  renderHistory();
+})();
+</script>
+</body>
+</html>
